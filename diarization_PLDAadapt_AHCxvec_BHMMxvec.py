@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # Copyright 2019 Lukas Burget (burget@fit.vutbr.cz)
 #
@@ -20,19 +20,19 @@
 # The recipe consists in doing Agglomerative Hierachical Clustering on
 # x-vectors in a first step. Then, Variational Bayes HMM over x-vectors
 # is applied using the AHC output as initialization.
-# 
+#
 # The BUT submission for the challenge is presented in
 # F. Landini, S. Wang, M. Diez, L. Burget et al.
 # BUT System for the Second DIHARD Speech Diarization Challenge, ICASSP 2020
-# and a more detailed analysis of this approach is presented in 
+# and a more detailed analysis of this approach is presented in
 # M. Diez, L. Burget, F. Landini, S. Wang, J. \v{C}ernock\'{y}
-# Optimizing Bayesian HMM based x-vector clustering for the second DIHARD speech 
+# Optimizing Bayesian HMM based x-vector clustering for the second DIHARD speech
 # diarization challenge, ICASSP 2020
 
-# A more thorough description and study of the VB-HMM with eigen-voice priors 
-# approach for diarization is presented in 
+# A more thorough description and study of the VB-HMM with eigen-voice priors
+# approach for diarization is presented in
 # M. Diez, L. Burget, F. Landini, J. \v{C}ernock\'{y}
-# Analysis of Speaker Diarization based on Bayesian HMM with Eigenvoice Priors, 
+# Analysis of Speaker Diarization based on Bayesian HMM with Eigenvoice Priors,
 # IEEE Transactions on Audio, Speech and Language Processing, 2019
 
 # This recipe differs from our submission to the challenge in that
@@ -50,7 +50,7 @@ import time
 from scipy.special import softmax
 
 out_rttm_dir  =       sys.argv[1]   # Directory to store output rttm files
-xvec_ark_file =       sys.argv[2]   # Kaldi ark file with x-vectors from one or more input recordings 
+xvec_ark_file =       sys.argv[2]   # Kaldi ark file with x-vectors from one or more input recordings
                                     # Attention: all x-vectors from one recording must be in one ark file
 segments_file =       sys.argv[3]   # File with x-vector timing info (see diarization_lib.read_xvector_timing_dict)
 mean_vec_file =       sys.argv[4]   # File with mean vector in Kaldi format for x-vector centering
@@ -140,7 +140,7 @@ for file_name, segs in recit:
 
         #vbx_time = time.time()-vbx_start
 
-        labels = np.unique(q.argmax(1), return_inverse=True)[1] 
+        labels = np.unique(q.argmax(1), return_inverse=True)[1]
 
     assert(np.all(segs_dict[file_name][0] == np.array(seg_names)))
     start, end = segs_dict[file_name][1].T

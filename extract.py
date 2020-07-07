@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # -*- coding: utf-8 -*-
 # @Authors: Shuai Wang, Federico Landini
@@ -15,6 +15,9 @@ import random
 import numpy as np
 import kaldi_io
 from tdnn_model import load_kaldi_model
+import features
+import soundfile as sf
+from scipy.io import wavfile
 
 torch.backends.cudnn.benchmark=True
 
@@ -29,56 +32,94 @@ def validate_path(dir_name):
         os.makedirs(dir_name)
 
 
-class KaldiDatasetUtt_ARK(Dataset):
-    """
-    Utilize the generator properties
-    WARNING: The data loader should set num_workers to 1!
-    """
-    def __init__(self, feat_ark, feats_len, min_len=25):
-        super(KaldiDatasetUtt_ARK, self).__init__()
-        self.data_generator = kaldi_io.read_mat_ark(feat_ark)
-        self.min_len = min_len
-        self.length = feats_len
+class features_generator():
+    def __init__(self, in_file_list, in_vad_dir, in_audio_dir, in_format):
+        file_names = np.loadtxt(in_file_list, dtype=object).reshape((-1,1))
+        self.file_names = [f[0].split('=')[-1] for f in file_names]
+        self.in_vad_dir = in_vad_dir
+        self.in_audio_dir = in_audio_dir
+        self.in_format = in_format
 
-    def __getitem__(self, idx):
-        name, feat = next(self.data_generator)
-        if len(feat) < self.min_len:
-            left_pad = ((self.min_len) - len(feat)) // 2
-            right_pad = self.min_len - len(feat) - left_pad 
-            feat = np.pad(feat, ((left_pad, right_pad),(0,0)), 'edge')
-        return feat, name
+    def __iter__(self):
+        return self
 
-    def __len__(self):
-        return self.length
+    def __next__(self):
+        noverlap = 240
+        winlen = 400
+        fs = 16000
+        window = features.povey_window(winlen)
+        fbank_mx = features.mel_fbank_mx(winlen, fs, NUMCHANS=40, LOFREQ=20.0, HIFREQ=7600, htk_bug=False)
+        LC = 150
+        RC = 149
+        step = 150
+        shift = 25
+        min_length = 10
+
+        for fn in self.file_names:
+            print(fn)
+            if os.path.isfile(self.in_vad_dir+"/"+fn+".lab"):
+                labs = (np.loadtxt(self.in_vad_dir+"/"+fn+".lab", usecols=(0,1))*16000).astype(int)
+            else:
+                sys.exit("VAD segmentation extension must be .lab")
+            if self.in_format == 'flac':
+                signal, samplerate = sf.read(self.in_audio_dir+"/"+fn+".flac")
+            elif self.in_format == 'wav':
+                signal, samplerate = wavfile.read(self.in_audio_dir+"/"+fn+".wav")
+            else:
+                sys.exit("The audio input must be .flac or .wav")
+            signal = features.add_dither((signal*2**(samplerate/1000 - 1)).astype(int))
+            for segnum in range(len(labs)):
+                seg=signal[labs[segnum,0]:labs[segnum,1]]
+                seg=np.r_[seg[noverlap//2-1::-1], seg, seg[-1:-winlen//2-1:-1]] # Mirror noverlap//2 initial and final samples
+                fea = features.fbank_htk(seg, window, noverlap, fbank_mx, USEPOWER=True, ZMEANSOURCE=True)
+                fea = features.cmvn_floating_kaldi(fea, LC, RC, norm_vars=False)
+                slen = len(fea)
+                start=-shift
+                for start in range(0,slen-step,shift):
+                    name = "%s_%04d-%08d-%08d" % (fn, segnum, start, (start+step))
+                    feat = fea[start:start+step]
+                    segment = "%s_%04d-%08d-%08d %s %g %g\n" % (fn, segnum, start, (start+step), fn, labs[segnum,0]/float(fs)+start/100.0, labs[segnum,0]/float(fs)+(start+step)/100.0)
+                    yield name, feat, segment
+                if slen-start-shift > min_length:
+                    start += shift
+                    name = "%s_%04d-%08d-%08d" % (fn, segnum, start, slen)
+                    feat = fea[start:slen]
+                    segment = "%s_%04d-%08d-%08d %s %g %g\n" % (fn, segnum, start, slen, fn, labs[segnum,0]/float(fs)+start/100.0, labs[segnum,0]/float(fs)+start/100.0+(slen-start)/100.0)
+                    yield name, feat, segment
 
 
 def write_ark(model, args):
     """
     Write the extracted embeddings to ark file, having the same format as i-vectors
     """
-    dataset = KaldiDatasetUtt_ARK(args.feats_ark, args.feats_len)
-    data_loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=1)
+    gen = features_generator(args.in_file_list, args.in_vad_dir, args.in_audio_dir, args.in_format)
     model.eval()
     save_to = args.ark_file
     validate_path(save_to)
 
     with torch.no_grad():
-        with open(save_to, 'wb') as save_to_file:
-            for batch_idx, (data, names) in tqdm(enumerate(data_loader), ncols=100, total=len(data_loader)):
-                data = data.transpose(1,2)
-                data = data.to(args.cuda, dtype=torch.double)
-                _, embedding_a, embedding_b = model(data)
-                vectors = embedding_a.data.cpu().numpy()
-                for i in range(len(vectors)):
-                    kaldi_io.write_vec_flt(save_to_file, vectors[i], names[i])
+        ark_scp_output = 'ark:| copy-vector ark:- ark,scp:'+args.ark_file+','+args.scp_file
+        with open(args.segment_file, "w") as seg_file:
+            with kaldi_io.open_or_fd(ark_scp_output, "wb") as ark_scp_file:
+                for name, data, seg in next(gen):
+                    data = np.reshape(data, (1, data.shape[0], data.shape[1]))
+                    data = torch.from_numpy(data).to(args.cuda, dtype=torch.double)
+                    data = data.transpose(1,2)
+                    _, embedding_a, embedding_b = model(data)
+                    vector = embedding_a.data.cpu().numpy()
+                    kaldi_io.write_vec_flt(ark_scp_file, vector[0], name)
+                    seg_file.write(seg)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--feats-ark', type=str, help="Input feats ark")
-    parser.add_argument('--feats-len', type=int, help="Number of feats")
+    parser.add_argument('--in-file-list', type=str, help="Input scp list")
+    parser.add_argument('--in-vad-dir', type=str, help="Input VAD dir")
+    parser.add_argument('--in-audio-dir', type=str, help="Input audio dir")
+    parser.add_argument('--in-format', type=str, help="Input format")
     parser.add_argument('--ark-file', type=str, help="Output embeddings ark")
-    parser.add_argument('--batch-size', default=1, type=int)
+    parser.add_argument('--scp-file', type=str, help="Output embeddings scp")
+    parser.add_argument('--segment-file', type=str, help="Output embeddings segments")
     parser.add_argument("--model-init", type=str, default=None)
 
     args = parser.parse_args()
@@ -86,11 +127,11 @@ def main():
     if args.model_init is not None:
         model = load_kaldi_model(args.model_init)
     print(model)
-    
+
     args.cuda = torch.device("cpu")
     #args.cuda = torch.device("cuda")
-    #os.environ['CUDA_VISIBLE_DEVICES'] = '0'
-    
+    #os.environ['CUDA_VISIBLE_DEVICES'] = '3'
+
     model = model.to(args.cuda, dtype=torch.double)
     write_ark(model, args)
 

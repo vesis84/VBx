@@ -1,0 +1,9 @@
+# All the necessary python packages get installed:
+# python3 -m pip install -r requirements.txt
+
+torch
+tqdm
+numpy
+soundfile
+scipy
+
